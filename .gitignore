@@ -3,3 +3,5 @@ sim/obj_dir/
 sim/logs/
 sim/waves/
 *.vcd
+obj_dir*/
+obj_tb*/
