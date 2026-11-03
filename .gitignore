@@ -1,31 +1,68 @@
-sim/sim
+# Local tools, worktrees, and personal notes
+.claude/
+.codex/
+.agents/
+.aws/
+.vscode/
+.worktrees/
+/agent.md
+/WORK_MEMORY.md
+/SM3_GRADUATION_PLAN.md
 
-# Verilator generated build directories
+# Unrelated local projects and accidentally imported system files
+/%SystemDrive%/
+/android-timetable/
+/ntqq-image-scanner/
+/=
+
+# Verilator / XSim build products
 obj_dir*/
-
-# Vivado/XSim generated databases and work directories
-xsim.dir/
-**/xsim.dir/
-
-# Vivado/XSim generated logs, journals, databases, and waveforms
-xelab.log
-xelab.pb
-xsim*.log
-xsim*.jou
-xvlog.log
-xvlog.pb
-*.wdb
-
-# Native simulation build byproducts
+/sim/sim
 *.sdb
 *.rlx
 /new/*.out
+xsim.dir/
+*.wdb
+*.vcd
+*.fst
+*.pb
 
-# Local simulation logs and generated run trees
+# Vivado generated projects, checkpoints, reports, and process state
+.Xil/
+/vivado_projects/
+/vivado_runs/
+/vivado_timing/
+*.cache/
+*.runs/
+*.sim/
+*.hw/
+*.ip_user_files/
+*.dcp
+*.bit
+*.ltx
+*.jou
+*.log
+*.pid
+/clockInfo.txt
+/tight_setup_hold_pins.txt
+
+# Simulation scratch space; curated evidence lives in docs/results/
+/sim_results/
 /sim/logs/
 /sim/runs/
 /sim/vivado_opt_*/
+*.bak
+*.codex-wsl-backup-*
 
-# Reproducible firmware/FPGA build products (sources and scripts stay tracked)
+# Reproducible firmware products; selected IP initialization files remain tracked
 /software/rtthread_nano/**/build*/
 /software/rtthread_nano/**/vivado_*MHz/
+__pycache__/
+*.pyc
+
+# Local one-off Vivado experiments; use run_timingopt13.ps1 for current overlays
+/fpga/vivado/build_120_*.tcl
+/fpga/vivado/build_150_*.tcl
+/fpga/vivado/finish_*.tcl
+/fpga/vivado/resume_*.tcl
+/fpga/vivado/route_*.tcl
