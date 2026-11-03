@@ -35,7 +35,7 @@ typedef ee_u32         ee_f32;
 #define CORETIMETYPE ee_u32
 typedef ee_u32 CORE_TICKS;
 
-#define COREMARK_COUNTER_HZ         1000u
+#define COREMARK_COUNTER_HZ         50000000u
 
 #define SEED_METHOD       SEED_VOLATILE
 #define MEM_METHOD        MEM_STATIC

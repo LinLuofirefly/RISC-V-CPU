@@ -21,7 +21,9 @@ void rt_hw_board_init(void)
 
     __asm__ volatile ("csrw mtvec, %0" :: "r"(trap) : "memory");
     bsp_timer_init();
+#ifndef RT_USING_STARTUP_TRACE
     rt_kprintf("[bsp] board initialized\n");
+#endif
 }
 
 void bsp_fatal(uint32_t stage, const char *message)

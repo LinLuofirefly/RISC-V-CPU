@@ -11,6 +11,9 @@ module if_id (
     input  wire        load_valid_i,
 
     input  wire [31:0] inst_i,
+    input  wire [31:0] inst2_i,
+    input  wire        pair_valid_i,
+    input  wire        pair_swap_i,
     input  wire [31:0] inst_addr_i,
     input  wire        pred_taken_i,
     input  wire [31:0] pred_target_i,
@@ -29,6 +32,9 @@ module if_id (
     output reg  [1:0]  pred_type_o,
     output reg         redirect_already_issued_o,
     output reg  [31:0] inst_o,
+    output reg  [31:0] inst2_o,
+    output reg         pair_valid_o,
+    output reg         pair_swap_o,
     // State-valid for the instruction currently resident in IF/ID.  This is
     // deliberately separate from load_valid_o, which is only a load pulse.
     output reg         valid_o,
@@ -46,6 +52,9 @@ module if_id (
 );
 
     reg [31:0] hold_inst_reg;
+    reg [31:0] hold_inst2_reg;
+    reg        hold_pair_valid_reg;
+    reg        hold_pair_swap_reg;
     reg [31:0] hold_inst_addr_reg;
     reg        hold_pred_taken_reg;
     reg [31:0] hold_pred_target_reg;
@@ -71,6 +80,9 @@ module if_id (
         if (rst == 1'b0 || flush_flag_i == 1'b1) begin
             inst_addr_o          <= 32'b0;
             inst_o               <= `INST_NOP;
+            inst2_o              <= `INST_NOP;
+            pair_valid_o         <= 1'b0;
+            pair_swap_o          <= 1'b0;
             pred_taken_o         <= 1'b0;
             pred_target_o        <= 32'b0;
             pred_ghr_o           <= {`BP_GHR_WIDTH{1'b0}};
@@ -83,6 +95,9 @@ module if_id (
             load_pred_target_o   <= 32'b0;
 
             hold_inst_reg        <= 32'b0;
+            hold_inst2_reg       <= `INST_NOP;
+            hold_pair_valid_reg  <= 1'b0;
+            hold_pair_swap_reg   <= 1'b0;
             hold_inst_addr_reg   <= 32'b0;
             hold_pred_taken_reg  <= 1'b0;
             hold_pred_target_reg <= 32'b0;
@@ -106,6 +121,9 @@ module if_id (
             // 这要求顶层 load_valid_i 不要被 hold gate 掉。
             if (load_valid_i == 1'b1 && is_holding_reg == 1'b0) begin
                 hold_inst_reg        <= inst_i;
+                hold_inst2_reg       <= inst2_i;
+                hold_pair_valid_reg  <= pair_valid_i;
+                hold_pair_swap_reg   <= pair_swap_i;
                 hold_inst_addr_reg   <= inst_addr_i;
                 hold_pred_taken_reg  <= pred_taken_i;
                 hold_pred_target_reg <= pred_target_i;
@@ -124,6 +142,9 @@ module if_id (
                 // stall 释放后，优先 replay skid buffer 中保存的包。
                 inst_addr_o          <= hold_inst_addr_reg;
                 inst_o               <= hold_inst_reg;
+                inst2_o              <= hold_inst2_reg;
+                pair_valid_o         <= hold_pair_valid_reg;
+                pair_swap_o          <= hold_pair_swap_reg;
                 pred_taken_o         <= hold_pred_taken_reg;
                 pred_target_o        <= hold_pred_target_reg;
                 pred_ghr_o           <= hold_pred_ghr_reg;
@@ -153,6 +174,9 @@ module if_id (
                 // 有效 fetch 包进入 IF/ID
                 inst_addr_o          <= inst_addr_i;
                 inst_o               <= inst_i;
+                inst2_o              <= inst2_i;
+                pair_valid_o         <= pair_valid_i;
+                pair_swap_o          <= pair_swap_i;
                 pred_taken_o         <= pred_taken_i;
                 pred_target_o        <= pred_target_i;
                 pred_ghr_o           <= pred_ghr_i;
@@ -167,6 +191,9 @@ module if_id (
                 // 关键：无有效 fetch 包时，向后级送 bubble，而不是保持旧指令
                 inst_addr_o          <= 32'b0;
                 inst_o               <= `INST_NOP;
+                inst2_o              <= `INST_NOP;
+                pair_valid_o         <= 1'b0;
+                pair_swap_o          <= 1'b0;
                 pred_taken_o         <= 1'b0;
                 pred_target_o        <= 32'b0;
                 pred_ghr_o           <= {`BP_GHR_WIDTH{1'b0}};

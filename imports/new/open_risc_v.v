@@ -1,20 +1,32 @@
 `timescale 1ns / 1ps
 `include "defines.v"
 `include "dram_cache.v"
+`include "dual_issue_pairing.v"
+`include "dual_issue_forwarding.v"
+`include "dual_issue_lane.v"
 
 module open_risc_v #(
     // The request and its prediction metadata are registered as one packet
     // beside the synchronous IROM.  The default therefore keeps the fast
     // request-stage redirect enabled; set this to zero for A/B diagnostics.
-    parameter ENABLE_REQUEST_STAGE_BP = 1'b1
+    parameter ENABLE_REQUEST_STAGE_BP = 1'b1,
+    // Keep the fast request-stage conditional-branch lookup, but let indirect
+    // JALR prediction complete at the response stage by default.  The request
+    // ITC tag compare otherwise sits on the frontend hold-to-PC critical path.
+    parameter ENABLE_REQUEST_INDIRECT_BP = 1'b0,
+    parameter ENABLE_DUAL_ISSUE = 1'b1,
+    parameter [7:0] DUAL_OP_IMM_MASK = 8'hff,
+    parameter [7:0] DUAL_OP_REG_MASK = 8'hff
 ) (
     input  wire        clk,
     input  wire        rst_n,
     input  wire [31:0] inst_i,
+    input  wire [31:0] inst_next_i,
     input  wire [31:0] ram_data_i,
     input  wire [31:0] mmio_data_i,
     input  wire        timer_irq_i,
     output wire [31:0] pc_reg_pc_o,
+    output wire [31:0] irom_addr_o,
     output wire        mem_rd_reg_o,
     output wire [31:0] mem_rd_addr_o,
     output wire [3:0]  w_en,
@@ -87,6 +99,9 @@ module open_risc_v #(
     // ------------------------------------------------------------------
     wire [31:0] if_id_inst_addr_o;
     wire [31:0] if_id_inst_o;
+    wire [31:0] if_id_inst2_o;
+    wire        if_id_pair_valid_o;
+    wire        if_id_pair_swap_o;
     wire        if_id_valid_o;
     wire        if_id_pred_taken_o;
     wire [31:0] if_id_pred_target_o;
@@ -153,9 +168,37 @@ module open_risc_v #(
     // ------------------------------------------------------------------
     wire [31:0] regs_reg1_rdata_o;
     wire [31:0] regs_reg2_rdata_o;
+    wire [31:0] regs_reg3_rdata_o;
+    wire [31:0] regs_reg4_rdata_o;
     wire [4:0]  wb_rd_addr_o;
     wire [31:0] wb_rd_data_o;
     wire        wb_rd_wen_o;
+
+    // ------------------------------------------------------------------
+    // Dual-issue lane interfaces. Implementation lives in dedicated files.
+    // ------------------------------------------------------------------
+    wire [4:0]  lane1_id_rs1;
+    wire [4:0]  lane1_id_rs2;
+    wire        lane1_id_use_rs1;
+    wire        lane1_id_use_rs2;
+    wire        lane1_idex_valid;
+    wire        lane1_idex_older;
+    wire [4:0]  lane1_idex_rd;
+    wire [31:0] lane1_alu_result;
+    wire        lane1_exmem_valid;
+    wire [4:0]  lane1_exmem_rd;
+    wire [31:0] lane1_exmem_data;
+    wire        lane1_mem2_valid;
+    wire [4:0]  lane1_mem2_rd;
+    wire [31:0] lane1_mem2_data;
+    wire        lane1_wb_valid;
+    wire [31:0] lane1_wb_inst;
+    wire [4:0]  lane1_wb_rd;
+    wire [31:0] lane1_wb_data;
+    wire        lane1_branch_squash;
+    wire        lane1_kill_ex;
+    wire        lane1_idex_forward_valid;
+    wire        ex_redirect_kill;
 
     // ------------------------------------------------------------------
     // ID/EX
@@ -262,6 +305,21 @@ module open_risc_v #(
     wire [31:0] mem_wb_bp_update_target_o;
     wire [`BP_GHR_WIDTH-1:0] mem_wb_bp_update_ghr_o;
     wire        mem_wb_bp_actual_taken_o;
+
+    wire fetch_pair_raw;
+    wire fetch_pair_swap_raw;
+
+    dual_issue_pairing #(
+        .ENABLE_DUAL_ISSUE (ENABLE_DUAL_ISSUE),
+        .OP_IMM_MASK      (DUAL_OP_IMM_MASK),
+        .OP_REG_MASK      (DUAL_OP_REG_MASK)
+    ) dual_issue_pairing_inst (
+        .fetch_pc_i       (bp_fetch_pc_r[2:0]),
+        .inst0_i          (inst_i),
+        .inst1_i          (inst_next_i),
+        .pair_eligible_o  (fetch_pair_raw),
+        .pair_swap_o      (fetch_pair_swap_raw)
+    );
 
     // ------------------------------------------------------------------
     // Forwarding
@@ -498,6 +556,127 @@ module open_risc_v #(
     wire [1:0] effective_pred_type =
         use_held_prediction ? bp_early_pred_type_r : bp_pred_type_o;
 
+    wire [31:0] lane0_rs1_data;
+    wire [31:0] lane0_rs2_data;
+    wire [31:0] lane1_rs1_data;
+    wire [31:0] lane1_rs2_data;
+    wire        dual_dependency_wait;
+    wire        lane0_rs1_side_newer;
+    wire        lane0_rs2_side_newer;
+
+    // A killed side-lane EX result is not merely prevented from retiring: it
+    // must also disappear from the cross-lane bypass network immediately.
+    //
+    // Do not use bp_actual_taken_o here.  For a conditional branch,
+    //
+    //   actual_taken || prediction_mismatch
+    //       == pred_taken || prediction_mismatch
+    //
+    // and ex_jump_en_o/load_branch_jump_en_o already identify the two kinds
+    // of mismatch.  Selecting with the registered prediction is therefore
+    // functionally identical, while breaking the long combinational loop
+    // from the forwarding mux and branch comparator through Lane-1 forwarding,
+    // fetch-pair control, the request predictor and back to PC.D.
+    assign lane1_branch_squash =
+        id_ex_valid_o && id_ex_is_branch_o &&
+        (id_ex_pred_taken_o || ex_jump_en_o ||
+         ex_load_branch_jump_en_o);
+    assign lane1_kill_ex =
+        ctrl_kill_ex_o || ex_redirect_kill || late_load_miss_o ||
+        (ex_timer_irq_trap_o && !lane1_idex_older) ||
+        lane1_branch_squash;
+
+    // Retirement and same-cycle forwarding have different visibility rules.
+    // A redirect, trap or late-load miss discards/holds the younger ID packet,
+    // so that packet may harmlessly see the Lane-1 value before it is killed.
+    // A correctly predicted taken branch is different: its target packet is
+    // already in ID and must not observe the sequential Lane-1 instruction.
+    // Keep that registered-prediction guard, but do not feed live cache-hit or
+    // branch-comparison results back through dependency control into PC.D.
+    wire lane1_forward_squash =
+        id_ex_valid_o && id_ex_is_branch_o && id_ex_pred_taken_o;
+    assign lane1_idex_forward_valid =
+        lane1_idex_valid && !lane1_forward_squash;
+
+`ifndef SYNTHESIS
+    // Guard the Boolean substitution above against future changes to branch
+    // redirect generation.  Sampling on the falling edge avoids delta-cycle
+    // races between EX's combinational outputs and this check.
+    wire lane1_branch_squash_reference =
+        id_ex_valid_o && id_ex_is_branch_o &&
+        (bp_actual_taken_o || ex_jump_en_o ||
+         ex_load_branch_jump_en_o);
+    wire lane1_kill_ex_reference =
+        ctrl_kill_ex_o || ex_redirect_kill || late_load_miss_o ||
+        (ex_timer_irq_trap_o && !lane1_idex_older) ||
+        lane1_branch_squash_reference;
+    always @(negedge clk) begin
+        if (rst &&
+            (lane1_kill_ex !== lane1_kill_ex_reference))
+            $fatal(1,
+                   "lane1 kill substitution mismatch: pred=%b actual=%b ex_redirect=%b load_redirect=%b ctrl_kill=%b",
+                   id_ex_pred_taken_o, bp_actual_taken_o,
+                   ex_jump_en_o, ex_load_branch_jump_en_o,
+                   ctrl_kill_ex_o);
+    end
+`endif
+
+    dual_issue_forwarding dual_issue_forwarding_inst (
+        .id_valid_i              (if_id_valid_o),
+        .pair_valid_i            (if_id_pair_valid_o),
+        .lane1_id_rs1_i          (lane1_id_rs1),
+        .lane1_id_rs2_i          (lane1_id_rs2),
+        .lane1_id_use_rs1_i      (lane1_id_use_rs1),
+        .lane1_id_use_rs2_i      (lane1_id_use_rs2),
+        .lane0_id_use_rs1_i      (id_use_rs1_o),
+        .lane0_id_rs1_i          (id_rs1_addr_o),
+        .lane0_id_use_rs2_i      (id_use_rs2_o),
+        .lane0_id_rs2_i          (id_rs2_addr_o),
+        .lane0_reg_rs1_data_i    (regs_reg1_rdata_o),
+        .lane0_reg_rs2_data_i    (regs_reg2_rdata_o),
+        .lane1_reg_rs1_data_i    (regs_reg3_rdata_o),
+        .lane1_reg_rs2_data_i    (regs_reg4_rdata_o),
+        .main_idex_valid_i       (id_ex_valid_o),
+        .main_idex_wen_i         (id_ex_reg_wen),
+        .main_idex_rd_i          (id_ex_rd_addr_o),
+        .main_idex_is_load_i     (id_ex_is_load_o),
+        .main_idex_data_i        (ex_rd_data_o),
+        .main_exmem_wen_i        (ex_mem_rd_wen_o),
+        .main_exmem_rd_i         (ex_mem_pipe_rd_addr_o),
+        .main_exmem_is_load_i    (ex_mem_is_load_o),
+        .main_exmem_data_i       (ex_mem_rd_data_o),
+        .main_mem2_wen_i         (mem1_mem2_rd_wen_o),
+        .main_mem2_rd_i          (mem1_mem2_rd_addr_o),
+        .main_mem2_is_load_i     (mem1_mem2_is_load_o),
+        .main_mem2_load_ready_i  (~mem2_is_slow_load_o),
+        .main_mem2_data_i        (mem2_rd_data_o),
+        .side_idex_valid_i       (lane1_idex_forward_valid),
+        .side_idex_rd_i          (lane1_idex_rd),
+        .side_idex_data_i        (lane1_alu_result),
+        .side_exmem_valid_i      (lane1_exmem_valid),
+        .side_exmem_rd_i         (lane1_exmem_rd),
+        .side_exmem_data_i       (lane1_exmem_data),
+        .side_mem2_valid_i       (lane1_mem2_valid),
+        .side_mem2_rd_i          (lane1_mem2_rd),
+        .side_mem2_data_i        (lane1_mem2_data),
+        .lane0_rs1_data_o        (lane0_rs1_data),
+        .lane0_rs2_data_o        (lane0_rs2_data),
+        .lane1_rs1_data_o        (lane1_rs1_data),
+        .lane1_rs2_data_o        (lane1_rs2_data),
+        .lane0_rs1_side_newer_o  (lane0_rs1_side_newer),
+        .lane0_rs2_side_newer_o  (lane0_rs2_side_newer),
+        .dependency_wait_o       (dual_dependency_wait)
+    );
+
+    wire core_hold_flag = hdu_hold_flag_o | dual_dependency_wait;
+    // A late-load miss or an unfinished RV32M operation asks the HDU to hold
+    // the current EX packet without flushing it. If a younger dual-issue
+    // dependency happens in that same cycle, freeze only the frontend; do
+    // not destroy the packet that must replay. Ordinary dual-dependency
+    // stalls still inject one ID/EX bubble when the HDU itself is not holding.
+    wire core_flush_flag = hdu_flush_flag_o |
+        (dual_dependency_wait && !hdu_hold_flag_o);
+
     wire bp_replay_redirect =
         if_id_replaying_o &
         if_id_pred_taken_o &
@@ -505,18 +684,21 @@ module open_risc_v #(
         // the sequential path.  The delayed pulse still clears the following
         // pipeline slot after the replayed branch advances to ID/EX.
         ~bp_replay_flush_d1_r &
-        ~hdu_hold_flag_o;
+        ~core_hold_flag;
 
     // The redirect itself is persistent skid-packet state and feeds pc_reg's
     // run-next-PC cone without consulting live hit/hold.  This commit pulse is
     // only for epoch/flush bookkeeping after that packet is released.
     wire bp_load_hold_redirect_commit =
         if_id_load_branch_redirect_pending_o &&
-        !hdu_hold_flag_o && !ctrl_jump_en_o &&
+        !core_hold_flag && !ctrl_jump_en_o &&
         !ex_timer_irq_trap_o;
 
+    // A same-cycle EX redirect wins the final PC mux, while ctrl's registered
+    // flush removes the stale response before it can advance.  Keep that live
+    // redirect out of the response-predictor validity cone; otherwise branch
+    // comparison is needlessly routed through the predictor and back to PC.D.
     wire irom_rsp_kill =
-        ctrl_jump_en_o |
         ex_timer_irq_trap_o |
         bp_replay_redirect |
         bp_load_hold_redirect_commit;
@@ -527,15 +709,52 @@ module open_risc_v #(
         ~bp_pred_flush_d1_r &
         ~irom_rsp_kill;
 
+    // IF/ID admission still rejects the stale response in the actual redirect
+    // cycle.  This small local gate ends at IF/ID state and does not feed the
+    // response predictor or the PC mux.
+    wire ifid_admit_valid = ifid_fetch_valid & ~ctrl_jump_en_o;
+
     wire ifid_direct_fire =
-        ifid_fetch_valid &
-        ~hdu_hold_flag_o &
+        ifid_admit_valid &
+        ~core_hold_flag &
         ~if_id_replay_pending_o;
+
+    wire fetch_pair_accept = fetch_pair_raw & ifid_direct_fire;
+    wire fetch_pair_swap_accept =
+        fetch_pair_accept & fetch_pair_swap_raw;
+
+    // Normally pc_reg_pc_o points at PC+4 of the returning IROM packet.  A
+    // paired packet already contains that word, so the request must skip to
+    // PC+8.  Immediately after any redirect, however, pc_reg_pc_o is the
+    // redirect target itself rather than the sequential PC+4 pointer.  Do
+    // not apply the pair skip to that first target request.
+    // Do not map the hold condition onto FDRE.CE.  This state is replicated
+    // by implementation and its CE arc otherwise becomes the endpoint of the
+    // request-predictor/branch-recovery critical path.  A D-input feedback mux
+    // is functionally identical and gives the data path the normal D setup arc.
+    (* EXTRACT_ENABLE = "no" *) reg pc_is_redirect_target_r;
+
+    // Address stepping only needs to know whether the valid returning packet
+    // can consume both words.  Do not qualify it with the live redirect/flush
+    // kill cone used by IF/ID admission.  Holds still suppress the skip so the
+    // request address remains aligned with the frozen frontend packet.  On a
+    // redirect cycle PC.D is overridden, the held-branch target below has
+    // priority, or pc_is_redirect_target_r suppresses the first target skip.
+    wire fetch_pair_step =
+        fetch_pair_raw &
+        effective_pred_valid &
+        ~core_hold_flag &
+        ~if_id_replay_pending_o &
+        ~pc_is_redirect_target_r;
+    assign irom_addr_o = fetch_pair_step ?
+                         (pc_reg_pc_o + 32'd4) : pc_reg_pc_o;
 
     // Keep the prediction-to-PC redirect path independent from
     // predictor bookkeeping, statistics and update control.
     wire bp_fetch_redirect =
-        ifid_direct_fire &
+        ifid_fetch_valid &
+        ~core_hold_flag &
+        ~if_id_replay_pending_o &
         ~use_held_prediction &
         bp_pred_taken_o;
     assign bp_pc_redirect_valid = bp_fetch_redirect | bp_replay_redirect;
@@ -557,7 +776,7 @@ module open_risc_v #(
     // request captured on that edge.
     wire irom_req_fire =
         rst &
-        ~hdu_hold_flag_o &
+        ~core_hold_flag &
         ~ctrl_jump_en_o &
         ~ex_timer_irq_trap_o &
         ~bp_pc_redirect_valid &
@@ -592,14 +811,20 @@ module open_risc_v #(
     assign pc_jump_en_o   = pc_redirect_valid;
     assign pc_jump_addr_o = pc_redirect_target;
 
-    // PC control has two orthogonal axes.  The HDU decides only whether the
-    // pipeline advances.  Redirect sources decide only PC.D.  An older
-    // redirect may commit despite a younger stall, hence this single OR.
-    wire pc_pipeline_enable = ~hdu_hold_flag_o | pc_redirect_valid;
+    // PC control has two orthogonal axes.  Every predictor redirect above is
+    // qualified by irom_req_fire/ifid_direct_fire/bp_replay_redirect and thus
+    // already implies !core_hold_flag.  Only an older EX/CTRL redirect must
+    // override a younger frontend hold.  Keeping predictor lookup and target
+    // selection out of this enable equation removes the long
+    // branch->IF/ID->request-predictor->PC.CE timing cone without changing the
+    // Boolean function:
+    //   !hold | ctrl_redirect | (predictor_redirect & !hold)
+    // = !hold | ctrl_redirect.
+    wire pc_pipeline_enable = ~core_hold_flag | ctrl_jump_en_o;
     wire [31:0] pc_run_target =
         if_id_load_branch_redirect_pending_o ?
             if_id_load_branch_redirect_target_o :
-            (pc_reg_pc_o + 32'd4);
+            (pc_reg_pc_o + (fetch_pair_step ? 32'd8 : 32'd4));
 
     always @(posedge clk) begin
         if (rst == 1'b0) begin
@@ -615,11 +840,12 @@ module open_risc_v #(
             bp_early_pred_type_r     <= `BP_PRED_NONE;
             fetch_epoch_r            <= 1'b0;
             bp_fetch_epoch_r         <= 1'b0;
+            pc_is_redirect_target_r  <= 1'b0;
         end else begin
             // This register bank is the one-cycle IROM request/response tag.
             // inst_i observed after this edge belongs to this exact packet.
             bp_fetch_valid_r         <= irom_req_fire;
-            bp_fetch_pc_r            <= pc_reg_pc_o;
+            bp_fetch_pc_r            <= irom_addr_o;
             bp_fetch_pred_valid_r    <= bp_req_pred_valid_o;
             bp_early_pred_taken_r    <= bp_req_pred_taken_o;
             bp_early_pred_target_r   <= bp_req_pred_target_o;
@@ -639,6 +865,13 @@ module open_risc_v #(
             // Keep the existing one-cycle replay pipeline clear pulse.
             bp_replay_flush_d1_r     <= bp_replay_redirect;
             bp_load_hold_flush_d1_r  <= bp_load_hold_redirect_commit;
+
+            // Track the meaning of pc_reg_pc_o across holds.  When the PC
+            // register does not advance, its target/sequential role is also
+            // unchanged.
+            pc_is_redirect_target_r <= pc_pipeline_enable ?
+                                       pc_redirect_valid :
+                                       pc_is_redirect_target_r;
         end
     end
 
@@ -680,14 +913,16 @@ module open_risc_v #(
     // ==================================================================
     // Branch predictor
     // ==================================================================
-    branch_predictor branch_predictor_inst (
+    branch_predictor #(
+        .ENABLE_REQUEST_INDIRECT_PRED(ENABLE_REQUEST_INDIRECT_BP)
+    ) branch_predictor_inst (
         .clk             (clk),
         .rst             (rst),
         .if_valid_i      (bp_if_valid),
         .if_inst_i       (inst_i),
         .if_pc_i         (bp_fetch_pc_r),
         .if_ghr_i        (bp_early_pred_ghr_r),
-        .req_pc_i        (pc_reg_pc_o),
+        .req_pc_i        (irom_addr_o),
         .req_btb_hit_o   (bp_req_btb_hit_o),
         .req_pred_valid_o(bp_req_pred_valid_o),
         .req_pred_taken_o(bp_req_pred_taken_o),
@@ -733,8 +968,11 @@ module open_risc_v #(
     if_id if_id_inst (
         .clk                (clk),
         .rst                (rst),
-        .load_valid_i       (ifid_fetch_valid),
+        .load_valid_i       (ifid_admit_valid),
         .inst_i             (inst_i),
+        .inst2_i            (inst_next_i),
+        .pair_valid_i       (fetch_pair_accept),
+        .pair_swap_i        (fetch_pair_swap_accept),
         .inst_addr_i        (bp_fetch_pc_r),
         .pred_taken_i       (effective_pred_taken),
         .pred_target_i      (effective_pred_target),
@@ -742,7 +980,7 @@ module open_risc_v #(
         .pred_type_i        (effective_pred_type),
         .redirect_already_issued_i(
             use_held_prediction && effective_pred_taken),
-        .hold_flag_i        (hdu_hold_flag_o),
+        .hold_flag_i        (core_hold_flag),
         .load_branch_hold_i (load_branch_hold_o),
         .flush_flag_i       (frontend_flush_ifid),
         .inst_addr_o        (if_id_inst_addr_o),
@@ -753,6 +991,9 @@ module open_risc_v #(
         .redirect_already_issued_o(
             if_id_redirect_already_issued_o),
         .inst_o             (if_id_inst_o),
+        .inst2_o            (if_id_inst2_o),
+        .pair_valid_o       (if_id_pair_valid_o),
+        .pair_swap_o        (if_id_pair_swap_o),
         .valid_o            (if_id_valid_o),
         .load_valid_o       (if_id_load_valid_o),
         .load_pred_taken_o  (if_id_load_pred_taken_o),
@@ -772,19 +1013,35 @@ module open_risc_v #(
         .reg2_raddr_i (id_rs2_addr_o),
         .reg1_rdata_o (regs_reg1_rdata_o),
         .reg2_rdata_o (regs_reg2_rdata_o),
+        .reg3_raddr_i (lane1_id_rs1),
+        .reg4_raddr_i (lane1_id_rs2),
+        .reg3_rdata_o (regs_reg3_rdata_o),
+        .reg4_rdata_o (regs_reg4_rdata_o),
         .reg_wen      (wb_rd_wen_o),
         .reg_waddr_i  (wb_rd_addr_o),
-        .reg_wdata_i  (wb_rd_data_o)
+        .reg_wdata_i  (wb_rd_data_o),
+        .reg2_wen     (lane1_wb_valid),
+        .reg2_waddr_i (lane1_wb_rd),
+        .reg2_wdata_i (lane1_wb_data)
     );
 
     // ==================================================================
     // ID
     // ==================================================================
+    wire [31:0] lane0_issue_inst = if_id_pair_swap_o ?
+        if_id_inst2_o : if_id_inst_o;
+    wire [31:0] lane0_issue_pc = if_id_inst_addr_o +
+        (if_id_pair_swap_o ? 32'd4 : 32'd0);
+    wire [31:0] lane1_issue_inst = if_id_pair_swap_o ?
+        if_id_inst_o : if_id_inst2_o;
+    wire [31:0] lane1_issue_pc = if_id_inst_addr_o +
+        (if_id_pair_swap_o ? 32'd0 : 32'd4);
+
     id id_inst (
-        .inst_i          (if_id_inst_o),
-        .inst_addr_i     (if_id_inst_addr_o),
-        .rs1_data_i      (regs_reg1_rdata_o),
-        .rs2_data_i      (regs_reg2_rdata_o),
+        .inst_i          (lane0_issue_inst),
+        .inst_addr_i     (lane0_issue_pc),
+        .rs1_data_i      (lane0_rs1_data),
+        .rs2_data_i      (lane0_rs2_data),
         .rs1_addr_o      (id_rs1_addr_o),
         .rs2_addr_o      (id_rs2_addr_o),
         .inst_o          (id_inst_o),
@@ -837,6 +1094,8 @@ module open_risc_v #(
         .id_use_rs2_i          (id_use_rs2_o),
         .id_use_base_addr_i    (id_use_base_addr_o),
         .id_is_branch_i        (id_dec_is_branch_o),
+        .rs1_side_newer_i      (lane0_rs1_side_newer),
+        .rs2_side_newer_i      (lane0_rs2_side_newer),
         .ex_rd_addr_i          (id_ex_rd_addr_o),
         .ex_rd_wen_i           (id_ex_reg_wen_valid),
         .ex_is_load_i          (id_ex_is_load_valid),
@@ -861,12 +1120,12 @@ module open_risc_v #(
     id_ex id_ex_inst (
         .clk             (clk),
         .rst             (rst),
-        .hold_flag_i     (hdu_hold_flag_o),
+        .hold_flag_i     (core_hold_flag),
         // Flush invalidates one bit only.  The legacy bundle-clear input is
         // constant so no replay/flush cone reaches hundreds of register Rs.
         .flush_flag_i    (1'b0),
         .valid_i         (if_id_valid_o),
-        .valid_flush_i   (hdu_flush_flag_o | frontend_flush_idex),
+        .valid_flush_i   (core_flush_flag | frontend_flush_idex),
         .inst_i          (id_inst_o),
         .inst_addr_i     (id_inst_addr_o),
         .op1_i           (id_op1_o),
@@ -958,6 +1217,42 @@ module open_risc_v #(
         .ex_ras_predicted_jalr_o  (id_ex_ras_predicted_jalr_o)
     );
 
+    // ==================================================================
+    // Lane 1: side-effect-free integer pipeline
+    // ==================================================================
+    dual_issue_lane dual_issue_lane_inst (
+        .clk             (clk),
+        .rst_n           (rst),
+        .inst_i          (lane1_issue_inst),
+        .pc_i            (lane1_issue_pc),
+        .issue_valid_i   (if_id_valid_o && if_id_pair_valid_o),
+        .issue_older_i   (if_id_pair_swap_o),
+        .hold_i          (core_hold_flag),
+        .wait_ex_i       (ex_rv32m_busy_o && !ex_rv32m_done_o),
+        .flush_i         (core_flush_flag || frontend_flush_idex),
+        .kill_ex_i       (lane1_kill_ex),
+        .rs1_data_i      (lane1_rs1_data),
+        .rs2_data_i      (lane1_rs2_data),
+        .id_rs1_o        (lane1_id_rs1),
+        .id_rs2_o        (lane1_id_rs2),
+        .id_use_rs1_o    (lane1_id_use_rs1),
+        .id_use_rs2_o    (lane1_id_use_rs2),
+        .idex_valid_o    (lane1_idex_valid),
+        .idex_older_o    (lane1_idex_older),
+        .idex_rd_o       (lane1_idex_rd),
+        .ex_result_o     (lane1_alu_result),
+        .exmem_valid_o   (lane1_exmem_valid),
+        .exmem_rd_o      (lane1_exmem_rd),
+        .exmem_data_o    (lane1_exmem_data),
+        .mem2_valid_o    (lane1_mem2_valid),
+        .mem2_rd_o       (lane1_mem2_rd),
+        .mem2_data_o     (lane1_mem2_data),
+        .wb_valid_o      (lane1_wb_valid),
+        .wb_inst_o       (lane1_wb_inst),
+        .wb_rd_o         (lane1_wb_rd),
+        .wb_data_o       (lane1_wb_data)
+    );
+
     // Do not force max_fanout on wide datapath buses.
     // Excessive register replication can worsen physical routing timing.
     assign mem2_is_slow_load_o = mem1_mem2_is_load_o &&
@@ -1039,7 +1334,7 @@ module open_risc_v #(
     // The registered redirect is older than the instruction currently in EX.
     // Kill that younger instruction immediately while retaining ctrl's normal
     // delayed flush for the synchronous-IROM ghost response.
-    wire ex_redirect_kill = load_branch_redirect_valid_r;
+    assign ex_redirect_kill = load_branch_redirect_valid_r;
     wire ex_jump_en_to_ctrl =
         load_branch_redirect_valid_r || ex_jump_en_o;
     wire [31:0] ex_jump_addr_to_ctrl =

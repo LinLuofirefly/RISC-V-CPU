@@ -35,7 +35,7 @@ static void run_coremark(void)
 
     BSP_MMIO32(BSP_LED_ADDR) = COREMARK_LED_RUNNING;
     rt_kprintf("[coremark] RT-Thread hardware run start\n");
-    rt_kprintf("[coremark] timing source: independent hardware millisecond counter\n");
+    rt_kprintf("[coremark] timing source: independent 50 MHz hardware cycle counter\n");
 
     result = coremark_entry();
     if (result != 0)
@@ -109,8 +109,10 @@ int main(void)
 {
     char command[SHELL_LINE_SIZE];
 
+#ifndef RT_USING_STARTUP_TRACE
     rt_kprintf("[app] RT-Thread Nano ready\n");
     rt_kprintf("[app] CoreMark and HC-SR04 shell ready\n");
+#endif
 
     for (;;)
     {

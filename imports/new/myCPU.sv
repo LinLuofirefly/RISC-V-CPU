@@ -1,12 +1,15 @@
 `timescale 1ns / 1ps
 
-module myCPU (
+module myCPU #(
+    parameter ENABLE_DUAL_ISSUE = 1'b1,
+    parameter [7:0] DUAL_OP_IMM_MASK = 8'hff,
+    parameter [7:0] DUAL_OP_REG_MASK = 8'hff
+) (
     input  logic         cpu_rst,
     input  logic         cpu_clk,
-
     output logic [31:0]  irom_addr,
     input  logic [31:0]  irom_data,
-
+    input  logic [31:0]  irom_data_next,
     output logic [31:0]  perip_addr,
     output logic [3:0]   perip_wen,
     output logic [31:0]  perip_wdata,
@@ -16,9 +19,7 @@ module myCPU (
     output logic         perip_rd_en
 );
 
-    // Minimal machine timer used by RT-Thread's system tick.  The registers
-    // are write-only from software and intentionally live in the CPU clock
-    // domain so no CDC is needed for the interrupt request.
+    // Minimal machine timer used by RT-Thread's system tick.
     localparam logic [31:0] MTIMER_PERIOD_ADDR = 32'h8020_0060;
     localparam logic [31:0] MTIMER_CTRL_ADDR   = 32'h8020_0064;
     localparam logic [31:0] MTIMER_ACK_ADDR    = 32'h8020_0068;
@@ -57,14 +58,20 @@ module myCPU (
         end
     end
 
-    open_risc_v cpu_core (
+    open_risc_v #(
+        .ENABLE_DUAL_ISSUE (ENABLE_DUAL_ISSUE),
+        .DUAL_OP_IMM_MASK  (DUAL_OP_IMM_MASK),
+        .DUAL_OP_REG_MASK  (DUAL_OP_REG_MASK)
+    ) cpu_core (
         .clk           (cpu_clk),
         .rst_n         (~cpu_rst),
         .inst_i        (irom_data),
+        .inst_next_i   (irom_data_next),
         .ram_data_i    (perip_dram_rdata),
         .mmio_data_i   (perip_mmio_rdata),
         .timer_irq_i   (timer_irq_pending_r),
-        .pc_reg_pc_o   (irom_addr),
+        .pc_reg_pc_o   (),
+        .irom_addr_o   (irom_addr),
         .mem_rd_reg_o  (perip_rd_en),
         .mem_rd_addr_o (perip_rd_addr),
         .w_en          (perip_wen),
@@ -72,27 +79,4 @@ module myCPU (
         .w_data_i      (perip_wdata)
     );
 
-    /*always_comb begin
-        perip_wen = |mem_wen;  //将mem_wen的4位进行或运算，如果有一个位为1，则perip_wen为1，否则为0
-
-        if (perip_wen) begin
-            perip_addr  = mem_waddr;
-            perip_wdata = mem_wdata;
-            unique case (mem_wen)
-                4'b0001,
-                4'b0010,
-                4'b0100,
-                4'b1000: perip_mask = 2'b00;
-                4'b0011,
-                4'b1100: perip_mask = 2'b01;
-                4'b1111: perip_mask = 2'b10;
-                default: perip_mask = 2'b10;
-            endcase
-        end else begin
-            perip_addr  = mem_rd_en ? mem_rd_addr : 32'b0;
-            perip_wdata = 32'b0;
-            perip_mask  = mem_rd_en ? mem_rd_mask : 2'b10;
-        end
-    end
-   */
 endmodule

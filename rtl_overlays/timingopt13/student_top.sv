@@ -1,0 +1,137 @@
+`timescale 1ns / 1ps
+//////////////////////////////////////////////////////////////////////////////////
+// Company: 
+// Engineer: 
+// 
+// Create Date: 04/16/2025 06:21:13 PM
+// Design Name: 
+// Module Name: student_top
+// Project Name: 
+// Target Devices: 
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// 
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+// 
+//////////////////////////////////////////////////////////////////////////////////
+
+
+module student_top#(
+    parameter                           P_SW_CNT            = 64,
+    parameter                           P_LED_CNT           = 32,
+    parameter                           P_SEG_CNT           = 40,
+    parameter                           P_KEY_CNT           = 8,
+    parameter integer                   P_CPU_CLK_HZ        = 150000000,
+    parameter integer                   P_UART_BAUD_RATE    = 115200,
+    parameter                           P_ENABLE_DUAL_ISSUE = 1'b1,
+    parameter [7:0]                     P_DUAL_OP_IMM_MASK  = 8'hff,
+    parameter [7:0]                     P_DUAL_OP_REG_MASK  = 8'hff
+) (
+    input                                       w_cpu_clk     ,
+    input                                       w_clk_50Mhz   ,
+    input                                       w_clk_rst     ,
+    input  [P_KEY_CNT - 1:0]                    virtual_key   ,
+    input  [P_SW_CNT  - 1:0]                    virtual_sw    ,
+    input                                       cpu_uart_rx   ,
+    input                                       hcsr04_echo   ,
+
+    output [P_LED_CNT - 1:0]                    virtual_led   ,
+    output [P_SEG_CNT - 1:0]                    virtual_seg   ,
+    output                                      cpu_uart_tx   ,
+    output                                      hcsr04_trig
+);
+
+    // IROM
+    logic [31:0] pc;
+    logic [12:0] inst_addr;
+    logic [12:0] inst_addr_next;
+    logic [31:0] instruction;
+    logic [31:0] instruction_next;
+
+    // perip
+    logic [31:0] perip_addr, perip_wdata, perip_rdata;
+    logic [31:0] perip_dram_rdata, perip_mmio_rdata;
+    logic [31:0] perip_rd_addr;
+    logic         perip_rd_en;
+    logic [3:0] perip_wstrb;
+
+    // 32 KiB = 2^13 words * 32 bits.  Both addresses are produced by the
+    // frontend from parallel pre-incrementers.  Keeping the second increment
+    // out of this wrapper prevents a late pair/hold decision from entering a
+    // serial carry chain immediately before the IROM BRAM address pins.
+
+    myCPU #(
+        .ENABLE_DUAL_ISSUE(P_ENABLE_DUAL_ISSUE),
+        .DUAL_OP_IMM_MASK(P_DUAL_OP_IMM_MASK),
+        .DUAL_OP_REG_MASK(P_DUAL_OP_REG_MASK)
+    ) Core_cpu (
+        .cpu_rst            (w_clk_rst),
+        .cpu_clk            (w_cpu_clk),
+
+        // Interface to IROM
+        .irom_addr          (pc),             
+        .irom_word_addr     (inst_addr),
+        .irom_word_addr_next(inst_addr_next),
+        .irom_data          (instruction),   
+        .irom_data_next     (instruction_next),
+
+        // Interface to DRAM & peripheral
+        .perip_addr         (perip_addr),     
+        .perip_wen          (perip_wstrb),       
+        .perip_wdata        (perip_wdata),    
+        .perip_dram_rdata   (perip_dram_rdata),
+        .perip_mmio_rdata   (perip_mmio_rdata),
+        .perip_rd_addr      (perip_rd_addr),
+        .perip_rd_en        (perip_rd_en)     
+    );
+
+    Mem_IROM Mem_IROM (
+        .wea          (1'b0),
+        .addra        (inst_addr),
+        .douta        (instruction),
+        .clka        (w_cpu_clk),
+        .dina        (32'b0)
+    );
+
+    // The bring-up implementation duplicates the read-only IROM to obtain a
+    // second synchronous read port without changing the existing Vivado IP
+    // interface.  A later area pass can replace both copies with one true
+    // dual-port ROM generated from the same COE.
+    Mem_IROM Mem_IROM_next (
+        .wea          (1'b0),
+        .addra        (inst_addr_next),
+        .douta        (instruction_next),
+        .clka         (w_cpu_clk),
+        .dina         (32'b0)
+    );
+    
+    perip_bridge #(
+        .P_CPU_CLK_HZ       (P_CPU_CLK_HZ),
+        .P_UART_BAUD_RATE   (P_UART_BAUD_RATE)
+    ) bridge_inst (
+        .clk				(w_cpu_clk),
+        .cnt_clk            (w_clk_50Mhz),
+        .rst                (w_clk_rst),
+        .perip_addr			(perip_addr),
+        .perip_wdata		(perip_wdata),
+        .perip_wstrb			(perip_wstrb),
+        .perip_rdata		(perip_rdata),
+        .perip_dram_rdata   (perip_dram_rdata),
+        .perip_mmio_rdata   (perip_mmio_rdata),
+        .perip_rd_addr		(perip_rd_addr),
+        .perip_rd_en		(perip_rd_en),
+        .virtual_sw_input	(virtual_sw),
+        .virtual_key_input	(virtual_key),	
+        .uart_rx_input      (cpu_uart_rx),
+        .hcsr04_echo_input  (hcsr04_echo),
+        .virtual_seg_output	(virtual_seg),
+        .virtual_led_output (virtual_led),
+        .uart_tx_output     (cpu_uart_tx),
+        .hcsr04_trig_output (hcsr04_trig)
+    );
+
+endmodule

@@ -12,6 +12,9 @@ RTT_INCLUDE   := $(RTT_ROOT)/include
 RTT_SRC       := $(RTT_ROOT)/src
 RTT_PORT      := $(RTT_ROOT)/port-reference
 COREMARK_ROOT := ../third_party/coremark
+COREMARK_PORT_DIR ?= .
+COREMARK_PORTME_C ?= $(COREMARK_PORT_DIR)/core_portme.c
+COREMARK_PORTME_H ?= $(COREMARK_PORT_DIR)/core_portme.h
 
 BUILD_DIR ?= build
 MEM_DIR   := $(BUILD_DIR)/mem
@@ -20,7 +23,7 @@ IROM_WORDS ?= 16384
 LINKER_SCRIPT ?= $(BSP_ROOT)/linker.ld
 
 # 200 MHz CPU clock / 100 Hz RT-Thread scheduling tick.  CoreMark elapsed time
-# itself comes from the independent 1 kHz hardware counter in perip_bridge.
+# itself comes from the independent 50 MHz raw-cycle counter in perip_bridge.
 TIMER_PERIOD_CYCLES ?= 2000000
 COREMARK_ITERATIONS ?= 10000
 COREMARK_ALLOW_SHORT_RUN ?= 0
@@ -41,6 +44,7 @@ LINK_OPT_FLAGS       ?=
 PGO_CAPTURE          ?= 0
 PGO_PROFILE_DIR      ?=
 COREMARK_CRC_HW      ?= 0
+COREMARK_COUNTER_HZ  ?= 50000000
 CRC_COMPILER_PASS    := compiler/coremark_crc_pass.py
 COREMARK_CORE_UTIL_SHA256 := 166e9bf09afd290adffe2c6681d913c18373f77e457fae258499fbaad10b04fc
 
@@ -56,15 +60,23 @@ BASE_FLAGS := $(ARCH_FLAGS) -g3 -ffreestanding -fno-builtin \
 	-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables \
 	-fno-unwind-tables -msmall-data-limit=0 \
 	-I. -Iapplications -I$(BSP_ROOT)/bsp -I$(RTT_INCLUDE) -I$(RTT_PORT) \
-	-I$(COREMARK_ROOT) -D__RTTHREAD__ \
+	-I$(COREMARK_PORT_DIR) -I$(COREMARK_ROOT) -D__RTTHREAD__ \
 	-DCOREMARK_FLAGS_LABEL='"$(COREMARK_FLAGS_LABEL)"' \
+	-DFLAGS_STR='"$(COREMARK_FLAGS_LABEL) -march=rv32im_zicsr -mabi=ilp32"' \
+	-DMAIN_HAS_NOARGC=1 -DMEM_METHOD=0 -DMEM_LOCATION='"STATIC"' \
 	-DBSP_TIMER_PERIOD_CYCLES=$(TIMER_PERIOD_CYCLES) \
 	-DITERATIONS=$(COREMARK_ITERATIONS) -DPERFORMANCE_RUN=1 \
 	-DCOREMARK_ALLOW_SHORT_RUN=$(COREMARK_ALLOW_SHORT_RUN) \
 	-Wall -Wextra -Wno-unused-parameter
 RTTHREAD_FLAGS := $(BASE_FLAGS) $(PGO_CAPTURE_FLAGS) $(RTTHREAD_OPT_FLAGS)
-COREMARK_FLAGS := $(BASE_FLAGS) $(COREMARK_OPT_FLAGS)
-PORTME_FLAGS   := $(BASE_FLAGS) $(PGO_CAPTURE_FLAGS) $(PORTME_OPT_FLAGS)
+COREMARK_COMPAT_FLAGS := -DHAS_STDIO=0 -DHAS_PRINTF=0 \
+	-Drt_kprintf=coremark_printf
+COREMARK_FLAGS := $(BASE_FLAGS) $(COREMARK_COMPAT_FLAGS) \
+	-include coremark_portme_compat.h $(COREMARK_OPT_FLAGS)
+PORTME_FLAGS   := $(BASE_FLAGS) $(PGO_CAPTURE_FLAGS) $(PORTME_OPT_FLAGS) \
+	$(COREMARK_COMPAT_FLAGS) \
+	-DEE_TICKS_PER_SEC=$(COREMARK_COUNTER_HZ) \
+	-include coremark_portme_compat.h
 LDFLAGS := $(ARCH_FLAGS) -nostdlib -nostartfiles -static -no-pie \
 	-Wl,--gc-sections -Wl,--build-id=none \
 	-Wl,-Map=$(BUILD_DIR)/rtthread_coremark.map -T $(LINKER_SCRIPT)
@@ -77,6 +89,7 @@ OBJECTS := $(BUILD_DIR)/startup.o $(BUILD_DIR)/trap.o \
 	$(BUILD_DIR)/board.o $(BUILD_DIR)/drv_timer.o $(BUILD_DIR)/drv_uart.o \
 	$(BUILD_DIR)/drv_hcsr04.o \
 	$(BUILD_DIR)/app_main.o $(BUILD_DIR)/core_portme.o \
+	$(BUILD_DIR)/coremark_portme_compat.o $(BUILD_DIR)/coremark_io.o \
 	$(BUILD_DIR)/core_main.o $(COREMARK_OBJECTS) \
 	$(BUILD_DIR)/cpuport.o $(BUILD_DIR)/context_gcc.o $(RTT_OBJECTS) \
 	$(PGO_OBJECTS)
@@ -112,13 +125,19 @@ $(BUILD_DIR)/drv_hcsr04.o: $(BSP_ROOT)/bsp/drv_hcsr04.c $(BSP_ROOT)/bsp/drv_hcsr
 $(BUILD_DIR)/app_main.o: applications/main.c $(BSP_ROOT)/bsp/board.h $(BSP_ROOT)/bsp/drv_hcsr04.h rtconfig.h | $(BUILD_DIR)
 	$(CC) $(RTTHREAD_FLAGS) -std=c11 -c $< -o $@
 
-$(BUILD_DIR)/core_portme.o: core_portme.c core_portme.h rtconfig.h | $(BUILD_DIR)
-	$(CC) $(PORTME_FLAGS) -std=c99 -c $< -o $@
+$(BUILD_DIR)/core_portme.o: $(COREMARK_PORTME_C) $(COREMARK_PORTME_H) coremark_portme_compat.h rtconfig.h | $(BUILD_DIR)
+	$(CC) $(PORTME_FLAGS) -std=c99 -c $(COREMARK_PORTME_C) -o $@
+
+$(BUILD_DIR)/coremark_portme_compat.o: coremark_portme_compat.c coremark_portme_compat.h $(BSP_ROOT)/bsp/board.h | $(BUILD_DIR)
+	$(CC) $(RTTHREAD_FLAGS) -std=c11 -c $< -o $@
+
+$(BUILD_DIR)/coremark_io.o: coremark_io.c | $(BUILD_DIR)
+	$(CC) $(RTTHREAD_FLAGS) -std=c99 -c $< -o $@
 
 $(BUILD_DIR)/pgo_dump.o: pgo_dump.c | $(BUILD_DIR)
 	$(CC) $(RTTHREAD_FLAGS) -std=c11 -c $< -o $@
 
-$(BUILD_DIR)/core_main.o: $(COREMARK_ROOT)/core_main.c core_portme.h | $(BUILD_DIR)
+$(BUILD_DIR)/core_main.o: $(COREMARK_ROOT)/core_main.c $(COREMARK_PORTME_H) | $(BUILD_DIR)
 	$(CC) $(COREMARK_FLAGS) -std=c99 -Dmain=coremark_entry -c $< -o $@
 
 ifeq ($(COREMARK_CRC_HW),1)
@@ -135,7 +154,7 @@ $(BUILD_DIR)/core_util.o: $(COREMARK_ROOT)/core_util.c core_portme.h $(CRC_COMPI
 	$(CC) $(ARCH_FLAGS) -c $(BUILD_DIR)/core_util.crc.s -o $@
 endif
 
-$(BUILD_DIR)/core_%.o: $(COREMARK_ROOT)/core_%.c core_portme.h | $(BUILD_DIR)
+$(BUILD_DIR)/core_%.o: $(COREMARK_ROOT)/core_%.c $(COREMARK_PORTME_H) | $(BUILD_DIR)
 	$(CC) $(COREMARK_FLAGS) -std=c99 -c $< -o $@
 
 ifneq ($(strip $(PGO_PROFILE_DIR)),)

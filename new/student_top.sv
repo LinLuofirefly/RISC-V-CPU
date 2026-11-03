@@ -25,8 +25,11 @@ module student_top#(
     parameter                           P_LED_CNT           = 32,
     parameter                           P_SEG_CNT           = 40,
     parameter                           P_KEY_CNT           = 8,
-    parameter integer                   P_CPU_CLK_HZ        = 190000000,
-    parameter integer                   P_UART_BAUD_RATE    = 115200
+    parameter integer                   P_CPU_CLK_HZ        = 150000000,
+    parameter integer                   P_UART_BAUD_RATE    = 115200,
+    parameter                           P_ENABLE_DUAL_ISSUE = 1'b1,
+    parameter [7:0]                     P_DUAL_OP_IMM_MASK  = 8'hff,
+    parameter [7:0]                     P_DUAL_OP_REG_MASK  = 8'hff
 ) (
     input                                       w_cpu_clk     ,
     input                                       w_clk_50Mhz   ,
@@ -45,7 +48,9 @@ module student_top#(
     // IROM
     logic [31:0] pc;
     logic [12:0] inst_addr;
+    logic [12:0] inst_addr_next;
     logic [31:0] instruction;
+    logic [31:0] instruction_next;
 
     // perip
     logic [31:0] perip_addr, perip_wdata, perip_rdata;
@@ -56,14 +61,20 @@ module student_top#(
 
     // 32 KiB = 2^13 words * 32 bits.
     assign inst_addr = pc[14:2];
+    assign inst_addr_next = inst_addr + 13'd1;
 
-    myCPU Core_cpu (
+    myCPU #(
+        .ENABLE_DUAL_ISSUE(P_ENABLE_DUAL_ISSUE),
+        .DUAL_OP_IMM_MASK(P_DUAL_OP_IMM_MASK),
+        .DUAL_OP_REG_MASK(P_DUAL_OP_REG_MASK)
+    ) Core_cpu (
         .cpu_rst            (w_clk_rst),
         .cpu_clk            (w_cpu_clk),
 
         // Interface to IROM
         .irom_addr          (pc),             
         .irom_data          (instruction),   
+        .irom_data_next     (instruction_next),
 
         // Interface to DRAM & peripheral
         .perip_addr         (perip_addr),     
@@ -81,6 +92,18 @@ module student_top#(
         .douta        (instruction),
         .clka        (w_cpu_clk),
         .dina        (32'b0)
+    );
+
+    // The bring-up implementation duplicates the read-only IROM to obtain a
+    // second synchronous read port without changing the existing Vivado IP
+    // interface.  A later area pass can replace both copies with one true
+    // dual-port ROM generated from the same COE.
+    Mem_IROM Mem_IROM_next (
+        .wea          (1'b0),
+        .addra        (inst_addr_next),
+        .douta        (instruction_next),
+        .clka         (w_cpu_clk),
+        .dina         (32'b0)
     );
     
     perip_bridge #(

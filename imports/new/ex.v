@@ -305,20 +305,33 @@ module ex (
     reg  [31:0] rv32m_inst_r;
     reg  [4:0]  rv32m_rd_addr_r;
     reg         rv32m_rd_wen_r;
-    // EX only launches the iterative unit once per decoded M instruction.
-    // While busy is high, HDU freezes the front of the pipeline and EX emits NOP.
+    // Low-half MUL uses a registered FPGA multiplier.  Its single result
+    // register adds one EX wait cycle, but removes the forwarding mux, two-DSP
+    // cascade and result-select logic from one combinational timing path.
+    // High-half multiply and divide/remainder keep using the iterative unit.
     wire        rv32m_iter_busy_w;
     wire        rv32m_iter_done_w;
     wire [31:0] rv32m_result_w;
+    wire fast_mul_slot = dec_is_rv32m_i && (func3 == `INST_MUL);
+    wire iterative_rv32m_slot = dec_is_rv32m_i && !fast_mul_slot;
+    reg         fast_mul_pending_r;
+    (* use_dsp = "yes" *) reg [63:0] fast_mul_product_r;
+    reg  [31:0] fast_mul_inst_r;
+    reg  [4:0]  fast_mul_rd_addr_r;
+    reg         fast_mul_rd_wen_r;
     wire rv32m_start_slot =
-        dec_is_rv32m_i &&
+        iterative_rv32m_slot &&
         (rv32m_iter_busy_w == 1'b0) &&
         (rv32m_iter_done_w == 1'b0);
     wire csr_timer_irq_trap_w;
     assign timer_irq_trap_o = csr_timer_irq_trap_w;
     wire rv32m_start = valid_i && (kill_i == 1'b0) &&
                        !csr_timer_irq_trap_w && rv32m_start_slot;
-    wire rv32m_hide_ex = rv32m_start_slot || rv32m_iter_busy_w;
+    wire fast_mul_start = valid_i && (kill_i == 1'b0) &&
+                          !csr_timer_irq_trap_w && fast_mul_slot &&
+                          !fast_mul_pending_r;
+    wire rv32m_hide_ex = rv32m_start_slot || rv32m_iter_busy_w ||
+                         fast_mul_start;
 
     rv32m_iter rv32m_iter_inst (
         .clk    (clk),
@@ -332,8 +345,9 @@ module ex (
         .result_o(rv32m_result_w)
     );
 
-    assign rv32m_busy_o = rv32m_start || rv32m_iter_busy_w;
-    assign rv32m_done_o = rv32m_iter_done_w;
+    assign rv32m_busy_o = rv32m_start || rv32m_iter_busy_w ||
+                          fast_mul_start;
+    assign rv32m_done_o = rv32m_iter_done_w || fast_mul_pending_r;
 
     wire [31:0] csr_rdata_w;
     wire [31:0] csr_trap_jump_addr_w;
@@ -361,12 +375,25 @@ module ex (
             rv32m_inst_r    <= `INST_NOP;
             rv32m_rd_addr_r <= 5'b0;
             rv32m_rd_wen_r  <= 1'b0;
+            fast_mul_pending_r <= 1'b0;
+            fast_mul_product_r <= 64'b0;
+            fast_mul_inst_r    <= `INST_NOP;
+            fast_mul_rd_addr_r <= 5'b0;
+            fast_mul_rd_wen_r  <= 1'b0;
         end else if (rv32m_start) begin
             // Latch writeback metadata so the result can be replayed after the
             // iterative unit finishes, even though ID/EX is stalled meanwhile.
             rv32m_inst_r    <= inst_i;
             rv32m_rd_addr_r <= rd_addr_i;
             rv32m_rd_wen_r  <= rd_wen_i;
+        end else if (fast_mul_start) begin
+            fast_mul_pending_r <= 1'b1;
+            fast_mul_product_r <= alu_op1 * alu_op2;
+            fast_mul_inst_r    <= inst_i;
+            fast_mul_rd_addr_r <= rd_addr_i;
+            fast_mul_rd_wen_r  <= rd_wen_i;
+        end else if (fast_mul_pending_r) begin
+            fast_mul_pending_r <= 1'b0;
         end
     end
 
@@ -409,6 +436,11 @@ module ex (
             rd_data_o = rv32m_result_w;
             rd_wen_o  = rv32m_rd_wen_r;
             inst_o    = rv32m_inst_r;
+        end else if (fast_mul_pending_r == 1'b1) begin
+            rd_addr_o = fast_mul_rd_addr_r;
+            rd_data_o = fast_mul_product_r[31:0];
+            rd_wen_o  = fast_mul_rd_wen_r;
+            inst_o    = fast_mul_inst_r;
         end else begin
             if (is_cmcrc16_w) begin
                     rd_data_o = cmcrc16_result_w;

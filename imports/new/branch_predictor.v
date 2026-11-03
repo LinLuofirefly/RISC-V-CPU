@@ -16,7 +16,8 @@ module branch_predictor #(
     parameter HIST_ITC_TAG_WIDTH = 16,
     parameter ITC_CHOOSER_ADDR_WIDTH = 6,
     parameter ITC_CHOOSER_SIZE = (1 << ITC_CHOOSER_ADDR_WIDTH),
-    parameter ENABLE_INDIRECT_JALR_PRED = 1'b1
+    parameter ENABLE_INDIRECT_JALR_PRED = 1'b1,
+    parameter ENABLE_REQUEST_INDIRECT_PRED = 1'b1
 )(
     input  wire        clk,
     input  wire        rst,
@@ -278,24 +279,15 @@ module branch_predictor #(
     // that exact directory hit, so an alias can never redirect a normal PC.
     wire req_itc_pred_hit =
         ENABLE_INDIRECT_JALR_PRED &&
+        ENABLE_REQUEST_INDIRECT_PRED &&
         itc_valid[req_itc_idx] &&
         (itc_tag[req_itc_idx] == req_pc_i[31:ITC_ADDR_WIDTH+2]);
-    wire req_hist_itc_pred_hit =
-        hist_itc_valid[req_hist_itc_idx] &&
-        (hist_itc_tag[req_hist_itc_idx] == indirect_pc_tag(req_pc_i[31:2]));
-    wire req_itc_chooser_hit =
-        itc_chooser_valid[req_itc_chooser_idx] &&
-        (itc_chooser_tag[req_itc_chooser_idx] ==
-         req_pc_i[31:ITC_CHOOSER_ADDR_WIDTH+2]);
-    wire req_itc_chooser_prefers_history =
-        req_itc_chooser_hit && itc_chooser[req_itc_chooser_idx][1];
-    wire req_indirect_use_history =
-        req_itc_pred_hit && req_hist_itc_pred_hit &&
-        req_itc_chooser_prefers_history;
     wire req_indirect_pred_valid = req_itc_pred_hit;
-    wire [31:0] req_indirect_pred_target_w =
-        req_indirect_use_history ? hist_itc_target[req_hist_itc_idx] :
-                                   itc_target[req_itc_idx];
+    // Keep the request-to-PC path on the exact-PC last-target table.  The
+    // history-correlated table remains active in the response-stage predictor
+    // below, where it can correct a multi-target JALR without placing a
+    // distributed-RAM tag compare and chooser in the same cycle as PC.D.
+    wire [31:0] req_indirect_pred_target_w = itc_target[req_itc_idx];
 
     wire branch_bht_pred_taken_w = bht_valid[pred_idx] ? bht[pred_idx][1] : btfnt_taken;
     // btb_is_backward 是更新时算好的 (target < pc)，与原来的

@@ -7,6 +7,8 @@ module early_forwarding_select (
     input  wire       id_use_rs2_i,
     input  wire       id_use_base_addr_i,
     input  wire       id_is_branch_i,
+    input  wire       rs1_side_newer_i,
+    input  wire       rs2_side_newer_i,
 
     input  wire [4:0] ex_rd_addr_i,
     input  wire       ex_rd_wen_i,
@@ -134,6 +136,7 @@ module early_forwarding_select (
         !mem2_is_slow_load_i;
 
     assign rs1_fwd_sel_o =
+        rs1_side_newer_i       ? FWD_REG       :
         rs1_match_ex_late_load ? FWD_LATE_LOAD :
         rs1_match_ex           ? FWD_EX_MEM    :
         rs1_match_mem1_slow_branch ? FWD_MEM2_LOAD :
@@ -142,6 +145,7 @@ module early_forwarding_select (
                                  FWD_REG;
 
     assign rs2_fwd_sel_o =
+        rs2_side_newer_i       ? FWD_REG       :
         rs2_match_ex_late_load ? FWD_LATE_LOAD :
         rs2_match_ex           ? FWD_EX_MEM    :
         rs2_match_mem1_slow_branch ? FWD_MEM2_LOAD :

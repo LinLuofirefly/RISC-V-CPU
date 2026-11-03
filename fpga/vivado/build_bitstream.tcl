@@ -15,6 +15,8 @@ proc print_usage {} {
     puts {  -name TEXT               output name (default: digital_twin_<freq>MHz)}
     puts {  -out_dir DIR             output directory (default: DIR/vivado_<freq>MHz)}
     puts {  -check_only              validate inputs/project without changing it}
+    puts {  -fast_runtime            use Vivado runtime-optimized implementation strategy}
+    puts {  -full_timing_opt         run Explore place/route plus pre/post-route phys_opt}
     puts {  -allow_timing_fail       return success even when setup/hold timing fails}
 }
 
@@ -66,6 +68,8 @@ array set options [list \
     name {} \
     out_dir {} \
     check_only 0 \
+    fast_runtime 0 \
+    full_timing_opt 0 \
     allow_timing_fail 0]
 
 set index 0
@@ -83,6 +87,12 @@ while {$index < [llength $argv]} {
         }
         -check_only {
             set options(check_only) 1
+        }
+        -fast_runtime {
+            set options(fast_runtime) 1
+        }
+        -full_timing_opt {
+            set options(full_timing_opt) 1
         }
         -allow_timing_fail {
             set options(allow_timing_fail) 1
@@ -187,18 +197,31 @@ if {$options(check_only)} {
 
 file mkdir $report_dir
 
+# A manually replaced COE or PLL setting can leave an older generated XML
+# product marked stale.  Reset only those generated products before changing
+# IP properties so Vivado unlocks the XCI; the products are regenerated below.
+foreach ip [list $pll_ip $irom_ip $dram_ip] {
+    if {[get_property IS_LOCKED $ip]} {
+        puts "FPGA_BUILD_IP: resetting stale locked output for [get_property NAME $ip]"
+        reset_target all $ip
+    }
+}
+
 # Keep PLL, software timing constants and the UART divider on one frequency.
 set_property CONFIG.CLKOUT2_REQUESTED_OUT_FREQ $options(freq_mhz) $pll_ip
-set_property generic [list \
+set cpu_generics [list \
     P_CPU_CONSOLE_ON_UART=1 \
     P_CPU_CLK_HZ=$cpu_clk_hz \
-    P_CPU_UART_BAUD_RATE=$options(baud)] $source_set
-set simulation_sets [get_filesets -quiet sim_1]
-if {[llength $simulation_sets] == 1} {
-    set_property generic [list \
-        P_CPU_CONSOLE_ON_UART=1 \
-        P_CPU_CLK_HZ=$cpu_clk_hz \
-        P_CPU_UART_BAUD_RATE=$options(baud)] [lindex $simulation_sets 0]
+    P_CPU_UART_BAUD_RATE=$options(baud)]
+set cpu_filesets [list $source_set]
+foreach fileset_name {sim_1 Mem_IROM Mem_RAM} {
+    set matching_filesets [get_filesets -quiet $fileset_name]
+    if {[llength $matching_filesets] == 1} {
+        lappend cpu_filesets [lindex $matching_filesets 0]
+    }
+}
+foreach cpu_fileset $cpu_filesets {
+    set_property generic $cpu_generics $cpu_fileset
 }
 
 # Bind the requested software image before regenerating the BRAM output products.
@@ -226,9 +249,24 @@ set synth_run [require_one [get_runs -quiet synth_1] {synthesis run 'synth_1'}]
 reset_run $impl_run
 set synth_status [run_and_check synth_1 $options(jobs) {top-level synthesis}]
 
-# Vivado 2023.2 previously crashed in this project's optional post-route Explore
-# pass.  Route timing cleanup is retained; only that unstable optional pass is off.
-set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED false $impl_run
+if {$options(fast_runtime)} {
+    puts {FPGA_BUILD_IMPL: using Flow_RuntimeOptimized strategy}
+    set_property strategy Flow_RuntimeOptimized $impl_run
+}
+
+if {$options(full_timing_opt)} {
+    # Keep the complete timing-driven flow in one reproducible project run.
+    # Four worker threads are recommended for this design: the Explore
+    # physical-optimization passes peak near 10 GB on Vivado 2023.2.
+    puts {FPGA_BUILD_IMPL: using Performance_ExplorePostRoutePhysOpt strategy}
+    set_property strategy Performance_ExplorePostRoutePhysOpt $impl_run
+    set_property STEPS.PHYS_OPT_DESIGN.IS_ENABLED true $impl_run
+    set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED true $impl_run
+} else {
+    # Preserve the shorter legacy build for callers that only need a quick
+    # image.  Timing sign-off builds must pass -full_timing_opt.
+    set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED false $impl_run
+}
 launch_runs $impl_run -to_step write_bitstream -jobs $options(jobs)
 wait_on_run $impl_run
 set impl_status [get_property STATUS $impl_run]
@@ -292,6 +330,10 @@ puts $summary "actual_mhz=$actual_mhz"
 puts $summary "period_ns=$period_ns"
 puts $summary "uart_baud=$options(baud)"
 puts $summary "irom_words=$options(irom_words)"
+puts $summary "full_timing_opt=$options(full_timing_opt)"
+puts $summary "impl_strategy=[get_property STRATEGY $impl_run]"
+puts $summary "post_place_phys_opt=[get_property STEPS.PHYS_OPT_DESIGN.IS_ENABLED $impl_run]"
+puts $summary "post_route_phys_opt=[get_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED $impl_run]"
 puts $summary "synth_status=$synth_status"
 puts $summary "impl_status=$impl_status"
 puts $summary "wns_ns=$wns"

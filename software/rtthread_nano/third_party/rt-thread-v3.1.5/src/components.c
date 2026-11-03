@@ -222,9 +222,15 @@ int rtthread_startup(void)
     rt_show_version();
 
     /* timer system initialization */
+#ifdef RT_USING_STARTUP_TRACE
+    rt_kprintf("timer init!\n");
+#endif
     rt_system_timer_init();
 
     /* scheduler system initialization */
+#ifdef RT_USING_STARTUP_TRACE
+    rt_kprintf("system init!\n");
+#endif
     rt_system_scheduler_init();
 
 #ifdef RT_USING_SIGNALS
@@ -233,15 +239,27 @@ int rtthread_startup(void)
 #endif
 
     /* create init_thread */
+#ifdef RT_USING_STARTUP_TRACE
+    rt_kprintf("app init!\n");
+#endif
     rt_application_init();
 
     /* timer thread initialization */
+#ifdef RT_USING_STARTUP_TRACE
+    rt_kprintf("timer thread init!\n");
+#endif
     rt_system_timer_thread_init();
 
     /* idle thread initialization */
+#ifdef RT_USING_STARTUP_TRACE
+    rt_kprintf("idle init!\n");
+#endif
     rt_thread_idle_init();
 
     /* start scheduler */
+#ifdef RT_USING_STARTUP_TRACE
+    rt_kprintf("schedule start!\n");
+#endif
     rt_system_scheduler_start();
 
     /* never reach here */

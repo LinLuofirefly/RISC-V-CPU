@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 module Mem_IROM (
     input  wire        wea,
-    input  wire [13:0] addra,
+    input  wire [12:0] addra,
     output reg  [31:0] douta,
     input  wire        clka,
     input  wire [31:0] dina
@@ -13,7 +13,7 @@ module Mem_IROM (
     end
 
     always @(posedge clka) begin
-        douta <= mem[addra];
+        douta <= mem[{1'b0, addra}];
     end
 
     // This behavioral model is read-only. Keep the port so it matches the
