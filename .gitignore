@@ -66,3 +66,4 @@ __pycache__/
 /fpga/vivado/finish_*.tcl
 /fpga/vivado/resume_*.tcl
 /fpga/vivado/route_*.tcl
+obj_tb*/
