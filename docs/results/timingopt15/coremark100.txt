@@ -1,0 +1,45 @@
+
+ \ | /
+- RT -     Thread Operating System
+ / | \     3.1.5 build Aug 31 2026
+ 2006 - 2020 Copyright by rt-thread team
+timer init!
+system init!
+app init!
+timer thread init!
+idle init!
+schedule start!
+msh >coremark
+[coremark] RT-Thread hardware run start
+[coremark] timing source: independent 50 MHz hardware cycle counter
+[coremark] RV32IM single-context performance run
+2K performance run parameters for coremark.
+CoreMark Size    : 666
+Total ticks      : 8735425
+Total time (secs): 0.174709
+Iterations/Sec   : 572.381996
+WARNING! Short functional run; score is not reportable.
+Iterations       : 100
+Compiler version : GCC 13.2.0
+Compiler flags   : -O3 / RT-Thread 3.1.5 -march=rv32im_zicsr -mabi=ilp32
+Memory location  : STATIC
+seedcrc          : 0xe9f5
+[0]crclist       : 0xe714
+[0]crcmatrix     : 0x1fd7
+[0]crcstate      : 0x8e3a
+[0]crcfinal      : 0x988c
+Correct operation validated. See README.md for run and reporting rules.
+CoreMark 1.0 : 572.381996 / GCC 13.2.0 -O3 / RT-Thread 3.1.5 -march=rv32im_zicsr -mabi=ilp32 / STATIC
+[coremark] run complete; LED off
+msh >COREMARK100_STATS cycles=45356612 pairs=4819048 rv32m_pairs=37 load_swap_pairs=342907 store_swap_pairs=10882 lane1_wb=4683707 addi=3131074 other_opimm=1002147 op=530523
+COREMARK_CPI cycles=31445017 main_retired=25928186 side_retired=4677591 total_retired=30605777 cpi=1.027421 ipc=0.973311 lane0_cpi=1.212774
+COREMARK_EXEC fast_mul=1879200 high_mul=0 div_rem=0 mdu_wait=939600 non_mdu_hdu_hold=776671 dual_wait=608170 dual_load=587080 dual_lane0_version=628098 dual_lane1_version=21090 frontend_empty=2663365
+COREMARK_HDU dep_shift=31940 mem1_load=24715 mem2_slow=0 late_miss=14320 dep_late=719581
+COREMARK_HDU_LATE load=18927 branch=700606 jalr=48 store=0 alu=0 other=0 dram=698262
+COREMARK_HDU_BRANCH_BASE reg=23753 exmem=32 mem1=0 late=676821 memwb=0 mem2load=0 probe_hit=4969 store_fwd=0
+COREMARK_FRONTEND ctrl_flush=517959 bp_flush=1676423 replay_flush=36779 load_hold_flush=2276 req_gap=4460947 epoch_drop=0 hold_empty=0 redirect=2158605
+TB_PASS CoreMark 100 dual-issue CRC validation completed
+- /mnt/c/Users/hp/Downloads/04_数字IC_FPGA与嵌入式项目/digital_twin/digital_twin.srcs/sources_1/rtl_overlays/timingopt15/tb_coremark100_dual.sv:246: Verilog $finish
+- S i m u l a t i o n   R e p o r t: Verilator 5.048 2026-04-26
+- Verilator: $finish at 271ms; walltime 51.304 s; speed 5.290 ms/s
+- Verilator: cpu 51.179 s on 1 threads; allocated 7 MB

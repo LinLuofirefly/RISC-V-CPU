@@ -1,160 +1,83 @@
-# Vivado 生成与下载 bit 流
+# Vivado 构建与下载
 
-这套流程固定使用工程顶层 `top`、器件 `xc7k325tffg900-2`，并要求在构建时明确指定一份同时包含 `irom.coe` 和 `dram.coe` 的固件目录。脚本会先把固件绑定到两个 Block Memory IP，再重新生成 IP、综合、实现、bit 流和时序报告，避免 Vivado 沿用工程中某个历史 COE 文件。
+目标器件为 `xc7k325tffg900-2`，工具为 Windows Vivado 2023.2，板级顶层为 `top`。
 
-## 目录职责
+## 当前双发射覆盖层：独立建工程
 
-- `new/top.sv`：板级物理顶层、PLL、UART 引脚通道和 CPU 子系统
-- `new/student_top.sv`：CPU、IROM 和外设桥
-- `imports/new/`：CPU 流水线、CSR、定时器等可综合 RTL
-- `new/perip_bridge.sv`、`new/dram_driver.sv`：UART、LED、数码管和 DRAM 外设
-- `ip/`：PLL、IROM、DRAM 的 Vivado IP 配置
-- `software/rtthread_nano/step8/`：RT-Thread Nano BSP 和普通线程应用
-- `software/rtthread_nano/coremark/`：RT-Thread Nano + CoreMark 上板固件
-- `fpga/vivado/`：正式 bit 流构建、报告和下载脚本
+当前入口 `run_timingopt13.ps1` 支持 `timingopt13/14/15`，无需仓库外的 `.xpr`。它从仓库的 RTL、XCI、XDC 和匹配 COE 创建隔离工程。
 
-仿真 testbench、`.mem`、Verilator/XSim 输出不会参与 bit 流综合。真正进入 FPGA 的是可综合 RTL、三个 IP、XDC 约束，以及写进 IROM/DRAM BRAM 初始化内容的固件。
-
-## 1. 先生成 FPGA 固件
-
-交叉编译工具目前位于 WSL，因此先在 PowerShell 中执行：
+在仓库根目录的 PowerShell 中执行：
 
 ```powershell
-wsl bash -lc "cd /mnt/c/Users/hp/Downloads/digital_twin/digital_twin.srcs/sources_1/software/rtthread_nano/step8 && make -B BUILD_DIR=build/fpga TIMER_PERIOD_CYCLES=1900000"
+./fpga/vivado/run_timingopt13.ps1 `
+  -CacheBits 8 `
+  -BuildTag coremark_dual_180MHz_timingopt15_new `
+  -Drive V: `
+  -OverlayName timingopt15
 ```
 
-这里 `1900000 = 190 MHz / 100 Hz`，对应 RT-Thread 的 100 Hz tick。成功后应有：
+- `BuildTag` 使用新名称；脚本拒绝覆盖已有工程。
+- `Drive` 选择未占用的盘符，用于中文/长路径下的临时短路径映射。
+- Vivado 安装路径当前为 `E:\Vivado\Vivado\2023.2`，其他安装位置需修改驱动脚本。
+- `CacheBits=8` 表示 256 行 DCache。
+- IROM 为 8,192 个 32 位字，DRAM 为 65,536 个 32 位字。
+- 固件取自所选覆盖层的 `images/irom.coe` 与 `images/dram.coe`。
+
+输出分别在 `vivado_projects/<BuildTag>/` 和 `vivado_runs/<BuildTag>/`。全流程包括 IP/OOC 综合、顶层综合、布局、物理优化、布线、布线后优化及最终重布线。
+
+### 用最终摘要决定能否上板
+
+查看 `vivado_runs/<BuildTag>/build_summary.txt`：
 
 ```text
-software/rtthread_nano/step8/build/fpga/irom.coe
-software/rtthread_nano/step8/build/fpga/dram.coe
-software/rtthread_nano/step8/build/fpga/rtthread_nano.elf
-software/rtthread_nano/step8/build/fpga/rtthread_nano.dis
-```
-
-生成包含 RT-Thread 和 CoreMark 的上板固件：
-
-```powershell
-wsl bash -lc "make -C /mnt/c/Users/hp/Downloads/digital_twin/digital_twin.srcs/sources_1/software/rtthread_nano/coremark -B BUILD_DIR=build/fpga TIMER_PERIOD_CYCLES=1900000 COREMARK_ITERATIONS=10000 OPT_FLAGS=-O1"
-```
-
-对应的初始化文件位于：
-
-```text
-software/rtthread_nano/coremark/build/fpga/irom.coe
-software/rtthread_nano/coremark/build/fpga/dram.coe
-```
-
-## 2. 先做快速配置检查
-
-在 `sources_1` 目录的 PowerShell 中执行：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\fpga\vivado\build_bitstream.ps1 `
-  -FirmwareDir .\software\rtthread_nano\step8\build\fpga `
-  -FrequencyMHz 190 `
-  -CheckOnly
-```
-
-检查会打开 `digital_twin.xpr`，确认器件、顶层、PLL/IROM/DRAM IP 和两份 COE 文件，不运行综合和布局布线。
-
-## 3. 完整生成 bit 流
-
-RT-Thread Nano：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\fpga\vivado\build_bitstream.ps1 `
-  -FirmwareDir .\software\rtthread_nano\step8\build\fpga `
-  -FrequencyMHz 190 `
-  -Name digital_twin_rtthread_nano_190MHz
-```
-
-RT-Thread Nano + CoreMark：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\fpga\vivado\build_bitstream.ps1 `
-  -FirmwareDir .\software\rtthread_nano\coremark\build\fpga `
-  -FrequencyMHz 190 `
-  -Name digital_twin_rtthread_coremark_190MHz
-```
-
-输出默认在固件目录的 `vivado_190_000MHz/` 下：
-
-```text
-<name>.bit
-build_summary.txt
-reports/timing_summary.rpt
-reports/timing_setup_paths.rpt
-reports/timing_hold_paths.rpt
-reports/drc.rpt
-reports/utilization.rpt
-```
-
-必须检查 `build_summary.txt` 中：
-
-```text
+wns_ns=...
+whs_ns=...
 timing_met=1
-wns_ns >= 0
-whs_ns >= 0
+bitstream_emitted=1
 ```
 
-脚本即使遇到时序失败也会保留 bit 流和报告用于定位，但默认返回错误码 8，不能把它当作可靠发布版本。只有用于临时实验时才可加 `-AllowTimingFail`。
+只有 setup/hold 均通过时，这个覆盖层流程才生成 `.bit`。脚本进程正常退出只说明流程完成；上板还需 `timing_met=1` 和 `bitstream_emitted=1`。
 
-以前保存的 `digital_twin_step8_190MHz.bit` 对应报告为 `WNS=-0.253 ns`、`WHS=0.063 ns`、`timing_met=0`，因此应由这套流程重新构建并重新检查，而不是直接作为正式下载文件。
+最近完成的 `timingopt14/15` 180 MHz 构建均未收敛，结果见 [验证记录](../../docs/RESULTS.md)。
 
-如果重新实现后 190 MHz 仍不收敛，可以先用 180 MHz 验证板级功能。此时要同时把固件参数改为 `TIMER_PERIOD_CYCLES=1800000`，再把 bit 流命令改为 `-FrequencyMHz 180`；构建脚本会同步修改 PLL 请求频率、CPU 顶层频率参数和 UART 分频参数。降低频率后仍必须以新报告中的 `timing_met=1` 为准。
+## 普通 BSP/CoreMark 固件构建
 
-## 4. 下载到 FPGA
+Linux/WSL 下，示例为 180 MHz CPU、100 Hz RT-Thread tick：
 
-连接并上电开发板，接好 JTAG，然后执行：
+```bash
+make -C software/rtthread_nano/coremark \
+  BUILD_DIR=build/fpga TIMER_PERIOD_CYCLES=1800000 \
+  IROM_WORDS=8192 COREMARK_ITERATIONS=10000 \
+  RTTHREAD_OPT_FLAGS=-O1 COREMARK_OPT_FLAGS=-O3
+```
+
+若链接内容超过 32 KiB，应明确扩大 IROM 并同步调整 RTL/IP 地址宽度及深度，而不是截断镜像。固件说明见 [CoreMark README](../../software/rtthread_nano/coremark/README.md)。重新编译的软件是另一份镜像，不会自动替换覆盖层中的固定测试镜像。
+
+## 已有 digital_twin 工程：兼容入口
+
+`build_bitstream.ps1` / `build_bitstream.tcl` 保留给已有 `digital_twin.xpr` 的使用者。PowerShell 包装器按旧目录布局定位仓库外的工程；新克隆优先用上面的独立覆盖层流程。
+
+也可直接调用 Tcl，明确指定工程和固件：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\fpga\vivado\program_bitstream.ps1 `
-  -Bitstream .\software\rtthread_nano\step8\build\fpga\vivado_190_000MHz\digital_twin_rtthread_nano_190MHz.bit
+& "E:\Vivado\Vivado\2023.2\bin\vivado.bat" `
+  -mode batch -source ./fpga/vivado/build_bitstream.tcl -tclargs `
+  -project C:/path/to/digital_twin.xpr `
+  -firmware_dir ./software/rtthread_nano/coremark/build/fpga `
+  -freq_mhz 180 -irom_words 8192 -name rtthread_coremark_180MHz
 ```
 
-如果 JTAG 链上有多个同型号器件，可用 `-DeviceIndex 1` 选择第二个。bit 流只写入 FPGA SRAM，断电后消失；若要上电自动启动，还需根据板卡 Flash 型号生成并烧写 `.bin`/`.mcs`，不能在不知道配置 Flash 型号时直接操作。
+`-check_only` 仅检查输入和工程配置。构建会同步 PLL 请求频率、CPU 时钟和 UART 参数，并重建 BRAM 初始化内容。兼容入口默认在时序失败时返回错误码 8，但保留诊断 bitstream；不能直接用于正式上板。
 
-下载后用串口工具打开板上 TX 对应串口：
+## 下载已通过时序的 bitstream
 
-```text
-115200 baud, 8 data bits, no parity, 1 stop bit
-```
-
-RT-Thread 固件应通过 UART 输出启动 banner、主线程、工作线程和 tick 信息。
-
-## Vivado GUI 中的等价操作
-
-脚本方式更不容易选错固件。如果需要在 GUI 中查看过程：
-
-1. 打开 `C:\Users\hp\Downloads\digital_twin\digital_twin.xpr`。
-2. 在 Sources 中确认 Design Sources 顶层是 `top`，器件是 `xc7k325tffg900-2`。
-3. 打开 `Mem_IROM`，把初始化文件设为本次固件的 `irom.coe`；打开 `Mem_RAM`，设为同一固件目录的 `dram.coe`。
-4. 打开 `pll`，确认第二路输出请求频率为 190 MHz，然后重新 Generate Output Products。
-5. 在 Settings 的 Synthesis/More Options 中确认顶层参数与脚本一致：`P_CPU_CLK_HZ=190000000`、`P_CPU_UART_BAUD_RATE=115200`、`P_CPU_CONSOLE_ON_UART=1`。
-6. 依次运行 Generate Bitstream。Vivado 会自动执行 Synthesis、Implementation 和 Write Bitstream。
-7. 打开 Implemented Design，查看 Report Timing Summary，只有 setup/hold 均通过才继续下载。
-8. 打开 Hardware Manager，Open Target -> Auto Connect，选择器件后 Program Device，指定刚生成并通过时序检查的 `.bit`。
-
-每次修改 CPU/外设 RTL，都要重新综合和实现；每次修改 C/汇编程序，都要重新生成 COE，并至少重新生成 BRAM IP 输出产品和 bit 流。不能只替换磁盘上的 COE 后继续使用旧 bit 流。
-
-`new/run_impl_*.tcl`、`new/set_clk2_only.tcl` 和 `step8/vivado_recover_190.tcl` 是以前的单次调试/恢复脚本，保留用于追溯，不作为当前正式构建入口。正式入口只有本目录的 `build_bitstream.ps1`/`build_bitstream.tcl`。
-
-## HC-SR04 / 64 KiB IROM 分支
-
-该分支的 `Mem_IROM` 固定为 16,384 个 32 位字（64 KiB），构建脚本会检查并重新生成该深度。固件命令如下：
+连接并上电开发板、接好 JTAG 后：
 
 ```powershell
-wsl bash -lc "cd /mnt/c/Users/hp/Downloads/digital_twin/digital_twin.srcs/sources_1/software/rtthread_nano/coremark && make -B BUILD_DIR=build/fpga IROM_WORDS=16384 TIMER_PERIOD_CYCLES=2000000 COREMARK_ITERATIONS=10000 RTTHREAD_OPT_FLAGS=-O1 COREMARK_OPT_FLAGS='-O3 -fprofile-use -fno-profile-values -fprofile-correction' COREMARK_FLAGS_LABEL='-O3 + PGO' PGO_PROFILE_DIR=profiles/coremark_100"
+./fpga/vivado/program_bitstream.ps1 `
+  -Bitstream ./vivado_runs/<BuildTag>/<BuildTag>.bit
 ```
 
-`build_bitstream.tcl` 会把 `new/hcsr04_controller.sv` 和
-`fpga/xdc/hcsr04_j7_g17_g18.xdc` 加入 Vivado 工程。约束固定为：
+串口为 115200 baud、8N1。固件提供 `help`、`coremark` 和 `distance` 命令。该命令写入 FPGA SRAM，断电后消失。
 
-- G17 / J7-1 / Debug_1：`hcsr04_trig`；
-- G18 / J7-2 / Debug_2：`hcsr04_echo`；
-- Bank 17 VADJ1 必须为 3.3 V，ECHO 必须先降压到 3.3 V。
+HC-SR04 的 TRIG 为 G17（J7-1），ECHO 为 G18（J7-2）。传感器外接 5 V 电源并共地；ECHO 需降至 3.3 V，Bank 17 VADJ1 设为 3.3 V。约束文件为 `fpga/xdc/hcsr04_j7_g17_g18.xdc`。

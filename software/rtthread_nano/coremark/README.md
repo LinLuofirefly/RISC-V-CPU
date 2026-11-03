@@ -5,6 +5,19 @@ upstream CoreMark 1.0 workload and the HC-SR04 command into one FPGA firmware
 image. `coremark` and `distance` are independent shell commands; they do not
 run concurrently and the FPGA only needs one firmware image.
 
+## Current dual-issue snapshot
+
+The latest CPU experiment and matching fixed test images live in
+[`../../../rtl_overlays/timingopt15`](../../../rtl_overlays/timingopt15).
+See [the project results](../../../docs/RESULTS.md) for its CoreMark/CPI and
+180 MHz implementation status. The CRC acceleration comparison below belongs
+to the earlier single-issue revision.
+
+The Makefile also accepts `COREMARK_PORT_DIR`, `COREMARK_PORTME_C` and
+`COREMARK_PORTME_H` for an external platform port. Its compatibility layer
+binds `read_csr(mcycle)` to the board counter; the bundled port remains the
+default.
+
 ## Build
 
 From WSL or Linux:
@@ -33,8 +46,10 @@ build/fpga/dram.coe
 ```
 
 The same build also creates `rtthread_coremark.elf`, its map/disassembly, and
-32-bit hexadecimal memory files under `build/fpga/mem/`. The IROM image is
-16,384 words (64 KiB), matching `student_top.sv` and `Mem_IROM`.
+32-bit hexadecimal memory files under `build/fpga/mem/`. The example above
+generates 16,384 words (64 KiB). The current dual-issue
+FPGA configuration uses 8,192 words (32 KiB); set `IROM_WORDS=8192` and keep
+the firmware, RTL address width and IP depth aligned.
 
 ## Board behavior
 
@@ -43,14 +58,14 @@ The same build also creates `rtthread_coremark.elf`, its map/disassembly, and
 - the LED register is nonzero while CoreMark is running and is cleared at end;
 - UART output uses 115200 baud, 8 data bits, no parity and one stop bit;
 - the UART command shell accepts `help`, `coremark` and `distance` repeatedly;
-- CoreMark timing comes from the independent 1 kHz hardware counter at
+- CoreMark timing comes from the independent 50 MHz hardware counter at
   `0x80200050`, not from RT-Thread timer-interrupt counts;
 - the default 10,000 iterations are long enough for CoreMark's ten-second rule.
 
 For a reportable score, also follow the upstream run/reporting rules and make
 sure the final FPGA implementation passes timing. RT-Thread timer interrupts
 still run during the benchmark, but elapsed time is sampled exclusively from
-the hardware millisecond counter.
+the hardware cycle counter.
 
 ## HC-SR04 connection and registers
 

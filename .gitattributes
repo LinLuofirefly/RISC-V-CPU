@@ -16,3 +16,6 @@
 *.rpt text eol=lf
 *.log text eol=lf
 *.json text eol=lf
+*.coe linguist-generated=true
+*.mem linguist-generated=true
+software/rtthread_nano/third_party/** linguist-vendored=true

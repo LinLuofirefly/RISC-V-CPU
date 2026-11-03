@@ -1,0 +1,48 @@
+--- tb_cache_store_refill_run.log ---
+TB_PASS cache partial stores, refill conflicts and tag replacement
+- /mnt/c/Users/hp/Downloads/04_数字IC_FPGA与嵌入式项目/digital_twin/digital_twin.srcs/sources_1/rtl_overlays/timingopt15/tb_cache_store_refill.sv:82: Verilog $finish
+- S i m u l a t i o n   R e p o r t: Verilator 5.048 2026-04-26
+- Verilator: $finish at 286ns; walltime 0.000 s; speed 5.587 ms/s
+- Verilator: cpu 0.000 s on 1 threads; allocated 6 MB
+
+--- tb_compact_cache_region_run.log ---
+TB_PASS compact cache MMIO and DRAM boundary aliases; bypass=2
+- /mnt/c/Users/hp/Downloads/04_数字IC_FPGA与嵌入式项目/digital_twin/digital_twin.srcs/sources_1/rtl_overlays/timingopt15/tb_compact_cache_region.sv:82: Verilog $finish
+- S i m u l a t i o n   R e p o r t: Verilator 5.048 2026-04-26
+- Verilator: $finish at 790ns; walltime 0.000 s; speed 6.875 ms/s
+- Verilator: cpu 0.000 s on 1 threads; allocated 6 MB
+
+--- tb_dual_issue_branch_guard_run.log ---
+TB_PASS branch guard and unaffected pair classes
+- /mnt/c/Users/hp/Downloads/04_数字IC_FPGA与嵌入式项目/digital_twin/digital_twin.srcs/sources_1/rtl_overlays/timingopt15/tb_dual_issue_branch_guard.sv:111: Verilog $finish
+- S i m u l a t i o n   R e p o r t: Verilator 5.048 2026-04-26
+- Verilator: $finish at 5ns; walltime 0.000 s; speed 188.019 us/s
+- Verilator: cpu 0.000 s on 1 threads; allocated 6 MB
+
+--- tb_dual_issue_load_forward_run.log ---
+TB_PASS dual MEM2 load forwarding
+- /mnt/c/Users/hp/Downloads/04_数字IC_FPGA与嵌入式项目/digital_twin/digital_twin.srcs/sources_1/new/tb_dual_issue_load_forward.sv:81: Verilog $finish
+- S i m u l a t i o n   R e p o r t: Verilator 5.048 2026-04-26
+- Verilator: $finish at 3ns; walltime 0.000 s; speed 52.479 us/s
+- Verilator: cpu 0.000 s on 1 threads; allocated 6 MB
+
+--- tb_lane1_load_pair_run.log ---
+TB_PASS swapped loads pairs=4 side_writes=4 load_writes=5 fallback=1 holds=3
+- /mnt/c/Users/hp/Downloads/04_数字IC_FPGA与嵌入式项目/digital_twin/digital_twin.srcs/sources_1/new/tb_lane1_load_pair.sv:170: Verilog $finish
+- S i m u l a t i o n   R e p o r t: Verilator 5.048 2026-04-26
+- Verilator: $finish at 365ns; walltime 0.000 s; speed 4.953 ms/s
+- Verilator: cpu 0.000 s on 1 threads; allocated 6 MB
+
+--- tb_lane1_rv32m_pair_run.log ---
+TB_PASS RV32M fast_mul=1 waits=68 lane1_writes=2 pairs=2
+- /mnt/c/Users/hp/Downloads/04_数字IC_FPGA与嵌入式项目/digital_twin/digital_twin.srcs/sources_1/new/tb_lane1_rv32m_pair.sv:148: Verilog $finish
+- S i m u l a t i o n   R e p o r t: Verilator 5.048 2026-04-26
+- Verilator: $finish at 975ns; walltime 0.000 s; speed 3.783 ms/s
+- Verilator: cpu 0.000 s on 1 threads; allocated 6 MB
+
+--- tb_load_rv32m_dependency_run.log ---
+TB_PASS load-to-RV32M result=42 holds=3
+- /mnt/c/Users/hp/Downloads/04_数字IC_FPGA与嵌入式项目/digital_twin/digital_twin.srcs/sources_1/rtl_overlays/timingopt15/tb_load_rv32m_dependency.sv:116: Verilog $finish
+- S i m u l a t i o n   R e p o r t: Verilator 5.048 2026-04-26
+- Verilator: $finish at 315ns; walltime 0.000 s; speed 2.925 ms/s
+- Verilator: cpu 0.000 s on 1 threads; allocated 6 MB

@@ -1,0 +1,12 @@
+flow=full_synth_opt_place_physopt_route_postroute_physopt_final_reroute
+overlay=timingopt15
+cache_index_bits=8
+requested_mhz=180
+actual_mhz=179.985601
+period_ns=5.556
+synth_status=synth_design Complete!
+impl_route_status=route_design Complete, Failed Timing!
+wns_ns=-1.371
+whs_ns=0.013
+timing_met=0
+bitstream_emitted=0
